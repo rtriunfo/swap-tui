@@ -4,7 +4,7 @@ A terminal UI for identifying which processes are contributing to swap on macOS.
 
 macOS does not expose per-process swap usage through any standard tool. `swap-tui` works around this by running `vmmap --summary` concurrently against the top memory-consuming processes and parsing the `SWAPPED SIZE` column from each process's memory map summary. Results stream in as they arrive and refresh automatically every 30 seconds.
 
-![screenshot placeholder — run the app to see the live view]
+![screenshot](assets/terminal.png)
 
 ## Requirements
 
