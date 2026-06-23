@@ -25,7 +25,7 @@ var (
 	styleWorth    = lipgloss.NewStyle().Foreground(lipgloss.Color("#ba7517"))
 	styleSmall    = lipgloss.NewStyle().Foreground(lipgloss.Color("#888780"))
 	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
-	styleSelected = lipgloss.NewStyle().Background(lipgloss.Color("#1e1e2e"))
+	styleSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")).Bold(true)
 	styleBold     = lipgloss.NewStyle().Bold(true)
 )
 
@@ -97,18 +97,22 @@ func Row(p process.Info, maxSwap int64, barWidth int, selected bool) string {
 	bar := barColorStyle(p).Render(strings.Repeat(runeBar, filled)) +
 		styleDim.Render(strings.Repeat(runeEmpty, empty))
 
-	row := fmt.Sprintf("  %-*s  %-*s  %s  %s  %s",
+	// The leading gutter doubles as the selection marker. An accent bar in the
+	// gutter is reliably visible — unlike a background fill, which the nested
+	// ANSI in the coloured bar would reset partway across the row.
+	gutter := "  "
+	if selected {
+		gutter = styleSelected.Render("▌ ")
+	}
+
+	return fmt.Sprintf("%s%-*s  %-*s  %s  %s  %s",
+		gutter,
 		colPID, pid,
 		colName, name,
 		bar,
 		swap,
 		rss,
 	)
-
-	if selected {
-		return styleSelected.Render(row)
-	}
-	return row
 }
 
 // barFilled calculates how many bar characters should be filled.

@@ -37,10 +37,10 @@ func TestBarWidth(t *testing.T) {
 		termWidth int
 		want      int
 	}{
-		{40, 10},                      // minimum clamp
-		{80, 80 - fixedWidth},         // exact calculation
-		{120, 120 - fixedWidth},       // exact calculation
-		{200, 60},                     // maximum clamp
+		{40, 10},                // minimum clamp
+		{80, 80 - fixedWidth},   // exact calculation
+		{120, 120 - fixedWidth}, // exact calculation
+		{200, 60},               // maximum clamp
 	}
 
 	for _, tt := range tests {
@@ -59,11 +59,11 @@ func TestBarFilled(t *testing.T) {
 		want     int
 	}{
 		{0, 100, 20, 0},
-		{100, 100, 20, 20},    // 100% → full bar
-		{50, 100, 20, 10},     // 50% → half bar
-		{305, 1638, 40, 7},    // ~18.6% of 40 = 7
-		{0, 0, 20, 0},         // zero maxSwap
-		{100, 100, 0, 0},      // zero barWidth
+		{100, 100, 20, 20}, // 100% → full bar
+		{50, 100, 20, 10},  // 50% → half bar
+		{305, 1638, 40, 7}, // ~18.6% of 40 = 7
+		{0, 0, 20, 0},      // zero maxSwap
+		{100, 100, 0, 0},   // zero barWidth
 	}
 
 	for _, tt := range tests {
@@ -138,6 +138,20 @@ func TestRowContainsExpectedFields(t *testing.T) {
 		if !strings.Contains(row, s) {
 			t.Errorf("Row() output missing %q\nGot: %q", s, row)
 		}
+	}
+}
+
+func TestRowSelectedShowsMarker(t *testing.T) {
+	p := process.Info{PID: 1234, Name: "MyApp", SwappedBytes: 100, RSSBytes: 200, Owner: "user"}
+
+	unselected := Row(p, 200, 20, false)
+	selected := Row(p, 200, 20, true)
+
+	if !strings.Contains(selected, "▌") {
+		t.Errorf("selected Row() should contain the ▌ marker\nGot: %q", selected)
+	}
+	if strings.Contains(unselected, "▌") {
+		t.Errorf("unselected Row() should not contain the ▌ marker\nGot: %q", unselected)
 	}
 }
 

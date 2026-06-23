@@ -11,8 +11,6 @@ import (
 	"sync"
 )
 
-const defaultTopN = 25
-
 // TopN returns the top n processes sorted by RSS, excluding pid 0 and 1.
 func TopN(n int) ([]Info, error) {
 	out, err := exec.Command("ps", "axo", "pid=,rss=,user=,comm=", "-m").Output()

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"syscall"
 
 	"github.com/charmbracelet/lipgloss"
 	"swap-tui/internal/process"
@@ -19,13 +20,15 @@ var (
 func (m Model) View() string {
 	var b strings.Builder
 
+	vis := m.visibleProcesses()
+
 	b.WriteString("\n")
 	b.WriteString(styleTitle.Render("  macOS Swap Audit") + "\n")
-	b.WriteString(styleSubtitle.Render("  "+swapStatsLine(m.swapStats)) + "\n\n")
+	b.WriteString(styleSubtitle.Render("  "+swapStatsLine(m.swapStats)) + "\n")
+	b.WriteString(styleSubtitle.Render("  "+trackedLine(vis, m.filter != "")) + "\n\n")
 
-	switch m.state {
-	case stateConfirmKill:
-		b.WriteString(confirmPrompt(m.selectedProcess()))
+	if m.state == stateConfirmKill {
+		b.WriteString(confirmPrompt(m.selectedProcess(), m.pendingSig))
 		return b.String()
 	}
 
@@ -33,13 +36,19 @@ func (m Model) View() string {
 		b.WriteString(styleError.Render(fmt.Sprintf("  error: %v", m.err)) + "\n")
 	}
 
-	if len(m.processes) == 0 {
-		if m.scanning {
+	if len(vis) == 0 {
+		switch {
+		case m.scanning:
 			b.WriteString(styleSubtitle.Render("  Scanning processes…") + "\n")
-		} else {
+		case m.filter != "":
+			b.WriteString(styleSubtitle.Render(fmt.Sprintf("  No processes match %q.", m.filter)) + "\n")
+		default:
 			b.WriteString(styleSubtitle.Render("  No swap usage found.") + "\n")
 		}
-		b.WriteString("\n" + styleFooter.Render(keys.help()) + "\n")
+		if m.state == stateFilter {
+			b.WriteString("\n" + styleConfirm.Render("  filter: "+m.filter+"_") + "\n")
+		}
+		b.WriteString("\n" + styleFooter.Render(m.footer()) + "\n")
 		return b.String()
 	}
 
@@ -47,17 +56,35 @@ func (m Model) View() string {
 	b.WriteString(styleBold.Render(Header(bw)) + "\n")
 	b.WriteString(styleSubtitle.Render(Divider(bw)) + "\n")
 
-	maxSwap := m.processes[0].SwappedBytes // already sorted descending
+	maxSwap := maxSwapped(vis) // independent of sort order
 
-	for i, p := range m.processes {
-		b.WriteString(Row(p, maxSwap, bw, i == m.selected) + "\n")
+	// Compute the visible window of rows.
+	visible := m.visibleRows()
+	total := len(vis)
+	start := clamp(m.scrollOff, 0, total-1)
+	end := clamp(start+visible, 0, total)
+
+	// "↑ N more" indicator when rows are hidden above.
+	if start > 0 {
+		b.WriteString(styleFooter.Render(fmt.Sprintf("  ↑ %d more", start)) + "\n")
 	}
 
-	if m.scanning {
+	for i := start; i < end; i++ {
+		b.WriteString(Row(vis[i], maxSwap, bw, i == m.selected) + "\n")
+	}
+
+	// "↓ N more" indicator when rows are hidden below.
+	if end < total {
+		b.WriteString(styleFooter.Render(fmt.Sprintf("  ↓ %d more", total-end)) + "\n")
+	}
+
+	if m.state == stateFilter {
+		b.WriteString("\n" + styleConfirm.Render("  filter: "+m.filter+"_") + "\n")
+	} else if m.scanning {
 		b.WriteString("\n" + styleSubtitle.Render("  Refreshing…") + "\n")
 	}
 
-	b.WriteString("\n" + styleFooter.Render(keys.help()) + "\n")
+	b.WriteString("\n" + styleFooter.Render(m.footer()) + "\n")
 	return b.String()
 }
 
@@ -70,11 +97,56 @@ func swapStatsLine(s process.SwapStats) string {
 		FormatBytes(s.UsedBytes), FormatBytes(s.TotalBytes), pct)
 }
 
-func confirmPrompt(p *process.Info) string {
+// trackedLine summarises the displayed processes and their combined swap.
+func trackedLine(procs []process.Info, filtered bool) string {
+	var total int64
+	for _, p := range procs {
+		total += p.SwappedBytes
+	}
+	label := "tracked processes"
+	if filtered {
+		label = "filtered processes"
+	}
+	return fmt.Sprintf("%s: %d · total swapped %s", label, len(procs), FormatBytes(total))
+}
+
+// maxSwapped returns the largest SwappedBytes in procs, used to normalise bars.
+func maxSwapped(procs []process.Info) int64 {
+	var max int64
+	for _, p := range procs {
+		if p.SwappedBytes > max {
+			max = p.SwappedBytes
+		}
+	}
+	return max
+}
+
+// footer renders the key-binding help plus the active sort and filter state.
+func (m Model) footer() string {
+	sortLabel := "swap"
+	if m.sortMode == sortByRSS {
+		sortLabel = "rss"
+	}
+	s := keys.help() + "   sort: " + sortLabel
+	if m.filter != "" {
+		s += fmt.Sprintf("   filter: %q (esc clears)", m.filter)
+	}
+	return s
+}
+
+func confirmPrompt(p *process.Info, sig syscall.Signal) string {
 	if p == nil {
 		return ""
 	}
 	return styleConfirm.Render(
-		fmt.Sprintf("  Send SIGTERM to %s (PID %d)?  [y] confirm  [n/esc] cancel\n", p.Name, p.PID),
+		fmt.Sprintf("  Send %s to %s (PID %d)?  [y] confirm  [n/esc] cancel\n",
+			signalName(sig), p.Name, p.PID),
 	)
+}
+
+func signalName(sig syscall.Signal) string {
+	if sig == syscall.SIGKILL {
+		return "SIGKILL"
+	}
+	return "SIGTERM"
 }

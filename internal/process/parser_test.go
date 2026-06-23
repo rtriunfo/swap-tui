@@ -138,3 +138,37 @@ func TestParseSwapStats(t *testing.T) {
 	check("UsedBytes", stats.UsedBytes, wantUsed)
 	check("FreeBytes", stats.FreeBytes, wantFree)
 }
+
+func TestParseSwapStatsMalformedInput(t *testing.T) {
+	// Empty / garbage input should return zero stats with no error (fields simply absent).
+	t.Run("empty input returns zero stats no error", func(t *testing.T) {
+		stats, err := ParseSwapStats("")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if stats.TotalBytes != 0 || stats.UsedBytes != 0 || stats.FreeBytes != 0 {
+			t.Errorf("expected zero stats, got %+v", stats)
+		}
+	})
+
+	t.Run("completely unrelated output returns zero stats no error", func(t *testing.T) {
+		stats, err := ParseSwapStats("kern.ipc.maxsockbuf: 8388608\nhw.physmem: 17179869184\n")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if stats.TotalBytes != 0 || stats.UsedBytes != 0 || stats.FreeBytes != 0 {
+			t.Errorf("expected zero stats, got %+v", stats)
+		}
+	})
+
+	// Directly call ParseSwapStats with a crafted kv scenario: the outer regex
+	// requires \d+ so any captured value starts with digits and sizePattern
+	// always matches. Verify the nil guard in the code path by calling
+	// parseSize directly with an empty string, which causes an error.
+	t.Run("parseSize rejects empty number string", func(t *testing.T) {
+		_, err := parseSize("", "M")
+		if err == nil {
+			t.Error("expected error from parseSize with empty num, got nil")
+		}
+	})
+}
