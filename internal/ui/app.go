@@ -2,6 +2,7 @@ package ui
 
 import (
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,27 +15,44 @@ const refreshInterval = 30 * time.Second
 
 const DefaultTopN = 50
 
+// visibleRows is the number of process rows to display when height is unknown.
+const defaultVisibleRows = 20
+
 type appState int
 
 const (
 	stateScanning    appState = iota // initial or mid-refresh scan in progress
 	stateReady                       // data showing, awaiting keyboard input
-	stateConfirmKill                 // awaiting y/n before sending SIGTERM
+	stateConfirmKill                 // awaiting y/n before sending a signal
+	stateFilter                      // typing a name filter
+)
+
+// sortMode controls the ordering of the process list.
+type sortMode int
+
+const (
+	sortBySwap sortMode = iota // descending by SwappedBytes (default)
+	sortByRSS                  // descending by RSSBytes
 )
 
 // Model is the bubbletea application model.
 type Model struct {
-	processes  []process.Info // sorted by SwappedBytes descending; only non-zero swap
-	swapStats  process.SwapStats
-	scanning   bool
-	state      appState
-	selected   int
-	width      int
-	height     int
-	topN       int
-	err        error
-	resultChan <-chan process.ScanResult
-	pending    map[int]process.Info // accumulates vmmap results mid-scan
+	processes   []process.Info // full list, sorted by sortMode; only non-zero swap
+	swapStats   process.SwapStats
+	scanning    bool
+	state       appState
+	sortMode    sortMode       // active ordering of processes
+	filter      string         // case-insensitive name substring; "" = no filter
+	pendingSig  syscall.Signal // signal to send once a kill is confirmed
+	selected    int            // visible index into visibleProcesses() (from selectedPID)
+	selectedPID int            // PID of the currently highlighted row; 0 = none
+	scrollOff   int            // index of the first visible row in the viewport
+	width       int
+	height      int
+	topN        int
+	err         error
+	resultChan  <-chan process.ScanResult
+	pending     map[int]process.Info // accumulates vmmap results mid-scan
 }
 
 // -- Messages -----------------------------------------------------------------
@@ -48,6 +66,7 @@ type (
 	swapStatsMsg struct{ stats process.SwapStats }
 	tickMsg      struct{ t time.Time }
 	errMsg       struct{ err error }
+	killDoneMsg  struct{} // sent after SIGTERM so we can trigger a refresh
 )
 
 // -- Constructor --------------------------------------------------------------
@@ -91,11 +110,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmdWaitForResult(m.resultChan)
 		}
 		// All vmmap calls done — promote pending to the display list.
-		m.processes = sortedBySwap(m.pending)
+		m.processes = sortProcesses(m.pending, m.sortMode)
 		m.pending = make(map[int]process.Info)
 		m.scanning = false
-		m.state = stateReady
-		m.selected = clamp(m.selected, 0, len(m.processes)-1)
+		// Don't disturb an open confirm/filter prompt when a refresh lands.
+		if m.state == stateScanning {
+			m.state = stateReady
+		}
+		// Re-resolve selected index from the stable selectedPID.
+		m.reconcileSelection()
 		return m, cmdReadSwapStats()
 
 	case swapStatsMsg:
@@ -103,6 +126,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		return m.startRefresh(), tea.Batch(cmdStartScan(m.topN), cmdScheduleTick())
+
+	case killDoneMsg:
+		// SIGTERM sent — kick off an immediate refresh so the process drops out.
+		return m.startRefresh(), cmdStartScan(m.topN)
 
 	case errMsg:
 		m.err = msg.err
@@ -121,23 +148,51 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, keys.Confirm):
 			m.state = stateReady
-			return m, cmdKill(m.selectedProcess())
+			return m, cmdKill(m.selectedProcess(), m.pendingSig)
 		case key.Matches(msg, keys.Cancel):
 			m.state = stateReady
+		}
+
+	case stateFilter:
+		switch msg.Type {
+		case tea.KeyEnter, tea.KeyEsc:
+			m.state = stateReady
+		case tea.KeyBackspace:
+			if n := len(m.filter); n > 0 {
+				m.filter = m.filter[:n-1]
+				m.reconcileSelection()
+			}
+		case tea.KeyRunes, tea.KeySpace:
+			m.filter += string(msg.Runes)
+			m.reconcileSelection()
 		}
 
 	case stateReady, stateScanning:
 		switch {
 		case key.Matches(msg, keys.Quit):
 			return m, tea.Quit
+		case msg.Type == tea.KeyEsc && m.filter != "":
+			// Esc clears an active filter.
+			m.filter = ""
+			m.reconcileSelection()
 		case key.Matches(msg, keys.Up):
-			m.selected = clamp(m.selected-1, 0, len(m.processes)-1)
+			m.moveSelection(-1)
 		case key.Matches(msg, keys.Down):
-			m.selected = clamp(m.selected+1, 0, len(m.processes)-1)
+			m.moveSelection(+1)
 		case key.Matches(msg, keys.Kill):
-			if len(m.processes) > 0 {
+			if len(m.visibleProcesses()) > 0 {
+				m.pendingSig = syscall.SIGTERM
 				m.state = stateConfirmKill
 			}
+		case key.Matches(msg, keys.ForceKill):
+			if len(m.visibleProcesses()) > 0 {
+				m.pendingSig = syscall.SIGKILL
+				m.state = stateConfirmKill
+			}
+		case key.Matches(msg, keys.Sort):
+			m.toggleSort()
+		case key.Matches(msg, keys.Filter):
+			m.state = stateFilter
 		case key.Matches(msg, keys.Refresh):
 			return m.startRefresh(), cmdStartScan(m.topN)
 		}
@@ -180,14 +235,14 @@ func cmdScheduleTick() tea.Cmd {
 	})
 }
 
-func cmdKill(p *process.Info) tea.Cmd {
+func cmdKill(p *process.Info, sig syscall.Signal) tea.Cmd {
 	if p == nil {
 		return nil
 	}
 	pid := p.PID
 	return func() tea.Msg {
-		syscall.Kill(pid, syscall.SIGTERM) //nolint:errcheck
-		return nil
+		syscall.Kill(pid, sig) //nolint:errcheck
+		return killDoneMsg{}
 	}
 }
 
@@ -200,24 +255,138 @@ func (m *Model) startRefresh() Model {
 }
 
 func (m *Model) selectedProcess() *process.Info {
-	if m.selected < 0 || m.selected >= len(m.processes) {
+	vis := m.visibleProcesses()
+	if m.selected < 0 || m.selected >= len(vis) {
 		return nil
 	}
-	p := m.processes[m.selected]
+	p := vis[m.selected]
 	return &p
 }
 
-func sortedBySwap(pending map[int]process.Info) []process.Info {
+// visibleProcesses returns the processes matching the active name filter.
+// With no filter it returns the full list unchanged.
+func (m Model) visibleProcesses() []process.Info {
+	if m.filter == "" {
+		return m.processes
+	}
+	q := strings.ToLower(m.filter)
+	out := make([]process.Info, 0, len(m.processes))
+	for _, p := range m.processes {
+		if strings.Contains(strings.ToLower(p.Name), q) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// moveSelection shifts the highlighted row by delta within the visible list,
+// keeping selectedPID and the scroll window in sync.
+func (m *Model) moveSelection(delta int) {
+	vis := m.visibleProcesses()
+	m.selected = clamp(m.selected+delta, 0, len(vis)-1)
+	m.selectedPID = pidAt(vis, m.selected)
+	m.scrollOff = clampScroll(m.scrollOff, m.selected, m.visibleRows())
+}
+
+// reconcileSelection re-derives the visible index from selectedPID after the
+// visible list changes (scan, sort toggle, or filter edit).
+func (m *Model) reconcileSelection() {
+	vis := m.visibleProcesses()
+	m.selected, m.selectedPID = resolveSelection(vis, m.selectedPID)
+	m.scrollOff = clampScroll(m.scrollOff, m.selected, m.visibleRows())
+}
+
+// toggleSort flips between swap- and RSS-ordered views, re-sorting the current
+// list immediately and keeping the same process selected.
+func (m *Model) toggleSort() {
+	if m.sortMode == sortBySwap {
+		m.sortMode = sortByRSS
+	} else {
+		m.sortMode = sortBySwap
+	}
+	sortInPlace(m.processes, m.sortMode)
+	m.reconcileSelection()
+}
+
+// visibleRows returns the number of process rows that fit in the terminal,
+// accounting for the fixed chrome lines (title + subtitle + blank + header +
+// divider + blank + footer = 7 lines, plus 1 for the "Refreshing…" line when
+// scanning). Falls back to defaultVisibleRows when height is not yet known.
+func (m *Model) visibleRows() int {
+	if m.height <= 0 {
+		return defaultVisibleRows
+	}
+	chrome := 8 // title, subtitle, blank, header, divider, blank, footer, margin
+	n := m.height - chrome
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// resolveSelection finds the visible index for the given PID after a re-sort.
+// If the PID is no longer present it clamps to a valid index and returns the
+// PID at that position. Returns (0, 0) for an empty list.
+func resolveSelection(procs []process.Info, pid int) (idx int, resolvedPID int) {
+	if len(procs) == 0 {
+		return 0, 0
+	}
+	for i, p := range procs {
+		if p.PID == pid {
+			return i, pid
+		}
+	}
+	// PID gone — clamp to last row.
+	idx = len(procs) - 1
+	return idx, procs[idx].PID
+}
+
+// pidAt returns the PID of the process at idx, or 0 if out of range.
+func pidAt(procs []process.Info, idx int) int {
+	if idx < 0 || idx >= len(procs) {
+		return 0
+	}
+	return procs[idx].PID
+}
+
+// clampScroll adjusts scrollOff so that selected stays within the viewport
+// [scrollOff, scrollOff+visibleRows). Returns the new scrollOff.
+func clampScroll(scrollOff, selected, visibleRows int) int {
+	if selected < scrollOff {
+		return selected
+	}
+	if selected >= scrollOff+visibleRows {
+		return selected - visibleRows + 1
+	}
+	return scrollOff
+}
+
+// sortProcesses collects the swapped (>0) processes from pending and returns
+// them ordered by the given mode.
+func sortProcesses(pending map[int]process.Info, mode sortMode) []process.Info {
 	procs := make([]process.Info, 0, len(pending))
 	for _, p := range pending {
 		if p.SwappedBytes > 0 {
 			procs = append(procs, p)
 		}
 	}
+	sortInPlace(procs, mode)
+	return procs
+}
+
+// sortInPlace orders procs descending by the active sort key.
+func sortInPlace(procs []process.Info, mode sortMode) {
 	sort.Slice(procs, func(i, j int) bool {
+		if mode == sortByRSS {
+			return procs[i].RSSBytes > procs[j].RSSBytes
+		}
 		return procs[i].SwappedBytes > procs[j].SwappedBytes
 	})
-	return procs
+}
+
+// sortedBySwap is a convenience wrapper for the default swap ordering.
+func sortedBySwap(pending map[int]process.Info) []process.Info {
+	return sortProcesses(pending, sortBySwap)
 }
 
 func clamp(v, lo, hi int) int {

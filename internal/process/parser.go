@@ -49,18 +49,28 @@ func ParseSwapStats(output string) (SwapStats, error) {
 	var err error
 
 	if v, ok := kv["total"]; ok {
-		if stats.TotalBytes, err = parseSize(sizePattern.FindStringSubmatch(v)[1], sizePattern.FindStringSubmatch(v)[2]); err != nil {
+		m := sizePattern.FindStringSubmatch(v)
+		if m == nil {
+			return SwapStats{}, fmt.Errorf("total: unrecognised format %q", v)
+		}
+		if stats.TotalBytes, err = parseSize(m[1], m[2]); err != nil {
 			return SwapStats{}, fmt.Errorf("total: %w", err)
 		}
 	}
 	if v, ok := kv["used"]; ok {
 		m := sizePattern.FindStringSubmatch(v)
+		if m == nil {
+			return SwapStats{}, fmt.Errorf("used: unrecognised format %q", v)
+		}
 		if stats.UsedBytes, err = parseSize(m[1], m[2]); err != nil {
 			return SwapStats{}, fmt.Errorf("used: %w", err)
 		}
 	}
 	if v, ok := kv["free"]; ok {
 		m := sizePattern.FindStringSubmatch(v)
+		if m == nil {
+			return SwapStats{}, fmt.Errorf("free: unrecognised format %q", v)
+		}
 		if stats.FreeBytes, err = parseSize(m[1], m[2]); err != nil {
 			return SwapStats{}, fmt.Errorf("free: %w", err)
 		}

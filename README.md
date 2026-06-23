@@ -20,6 +20,12 @@ cd swap-tui
 go build -o swap-tui .
 ```
 
+To stamp a version into the binary (otherwise it reports `dev`):
+
+```bash
+go build -ldflags "-X main.version=$(git describe --tags --always)" -o swap-tui .
+```
+
 Or run directly without installing:
 
 ```bash
@@ -31,6 +37,7 @@ go run .
 ```bash
 ./swap-tui           # scan top 50 processes by RSS (default)
 ./swap-tui -n 75     # scan top 75 if you suspect processes outside the default range
+./swap-tui -version  # print version and exit
 ```
 
 For system processes (WindowServer, mds_stores, etc.) to appear, run with sudo credentials available:
@@ -46,6 +53,9 @@ sudo -v && ./swap-tui
 | `↑` / `k` | Move selection up |
 | `↓` / `j` | Move selection down |
 | `x` | Send SIGTERM to selected process |
+| `X` | Send SIGKILL to selected process (force kill) |
+| `s` | Toggle sort between swap and RSS |
+| `/` | Filter the list by process name (Esc clears) |
 | `r` | Force refresh now |
 | `q` / `Ctrl+C` | Quit |
 
