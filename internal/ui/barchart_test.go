@@ -141,6 +141,20 @@ func TestRowContainsExpectedFields(t *testing.T) {
 	}
 }
 
+func TestRowSelectedShowsMarker(t *testing.T) {
+	p := process.Info{PID: 1234, Name: "MyApp", SwappedBytes: 100, RSSBytes: 200, Owner: "user"}
+
+	unselected := Row(p, 200, 20, false)
+	selected := Row(p, 200, 20, true)
+
+	if !strings.Contains(selected, "▌") {
+		t.Errorf("selected Row() should contain the ▌ marker\nGot: %q", selected)
+	}
+	if strings.Contains(unselected, "▌") {
+		t.Errorf("unselected Row() should not contain the ▌ marker\nGot: %q", unselected)
+	}
+}
+
 func TestHeaderAndDividerSameWidth(t *testing.T) {
 	for _, bw := range []int{10, 20, 40, 60} {
 		h := Header(bw)

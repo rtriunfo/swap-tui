@@ -292,7 +292,7 @@ func (m *Model) moveSelection(delta int) {
 // visible list changes (scan, sort toggle, or filter edit).
 func (m *Model) reconcileSelection() {
 	vis := m.visibleProcesses()
-	m.selected, m.selectedPID = resolveSelection(vis, m.selectedPID)
+	m.selected, m.selectedPID = resolveSelection(vis, m.selectedPID, m.selected)
 	m.scrollOff = clampScroll(m.scrollOff, m.selected, m.visibleRows())
 }
 
@@ -325,9 +325,11 @@ func (m *Model) visibleRows() int {
 }
 
 // resolveSelection finds the visible index for the given PID after a re-sort.
-// If the PID is no longer present it clamps to a valid index and returns the
-// PID at that position. Returns (0, 0) for an empty list.
-func resolveSelection(procs []process.Info, pid int) (idx int, resolvedPID int) {
+// If the PID is not present (e.g. nothing selected yet, or the process exited)
+// it keeps the cursor near fallbackIdx — clamped to the list — rather than
+// jumping. With fallbackIdx 0 this leaves a fresh list selected at the top.
+// Returns (0, 0) for an empty list.
+func resolveSelection(procs []process.Info, pid, fallbackIdx int) (idx int, resolvedPID int) {
 	if len(procs) == 0 {
 		return 0, 0
 	}
@@ -336,8 +338,8 @@ func resolveSelection(procs []process.Info, pid int) (idx int, resolvedPID int) 
 			return i, pid
 		}
 	}
-	// PID gone — clamp to last row.
-	idx = len(procs) - 1
+	// PID not present — keep the cursor near its previous position.
+	idx = clamp(fallbackIdx, 0, len(procs)-1)
 	return idx, procs[idx].PID
 }
 

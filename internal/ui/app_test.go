@@ -216,27 +216,35 @@ func TestNavigationKeepsPIDInSync(t *testing.T) {
 
 func TestResolveSelectionPIDPresent(t *testing.T) {
 	procs := testProcesses()
-	idx, pid := resolveSelection(procs, 200) // PID 200 is at index 1
+	idx, pid := resolveSelection(procs, 200, 0) // PID 200 is at index 1
 	if idx != 1 || pid != 200 {
 		t.Errorf("got (%d, %d), want (1, 200)", idx, pid)
 	}
 }
 
-func TestResolveSelectionPIDGone(t *testing.T) {
+func TestResolveSelectionPIDGoneKeepsPosition(t *testing.T) {
 	procs := testProcesses()
-	// PID 999 does not exist → should clamp to last row.
-	idx, pid := resolveSelection(procs, 999)
-	last := len(procs) - 1
-	if idx != last {
-		t.Errorf("idx = %d, want %d (last row)", idx, last)
+	// PID 999 does not exist → should keep the fallback index (clamped).
+	idx, pid := resolveSelection(procs, 999, 1)
+	if idx != 1 {
+		t.Errorf("idx = %d, want 1 (fallback index preserved)", idx)
 	}
-	if pid != procs[last].PID {
-		t.Errorf("pid = %d, want %d", pid, procs[last].PID)
+	if pid != procs[1].PID {
+		t.Errorf("pid = %d, want %d", pid, procs[1].PID)
+	}
+}
+
+func TestResolveSelectionDefaultsToTop(t *testing.T) {
+	procs := testProcesses()
+	// Nothing selected yet (pid 0, fallback 0) → top of the list.
+	idx, pid := resolveSelection(procs, 0, 0)
+	if idx != 0 || pid != procs[0].PID {
+		t.Errorf("got (%d, %d), want (0, %d)", idx, pid, procs[0].PID)
 	}
 }
 
 func TestResolveSelectionEmptyList(t *testing.T) {
-	idx, pid := resolveSelection(nil, 100)
+	idx, pid := resolveSelection(nil, 100, 0)
 	if idx != 0 || pid != 0 {
 		t.Errorf("got (%d, %d), want (0, 0)", idx, pid)
 	}
